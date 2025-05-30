@@ -1,0 +1,13 @@
+{
+  "domain": "duwi_home",
+  "name": "Duwi Home",
+  "codeowners": ["@duwi2024"],
+  "config_flow": true,
+  "documentation": "https://github.com/duwi2024/ha_duwi_home/blob/main/README.md",
+  "iot_class": "cloud_push",
+  "loggers": ["Duwi Home"],
+  "integration_type": "hub",
+  "issue_tracker": "https://github.com/duwi2024/ha_duwi_home/issues",
+  "requirements": ["websockets==14.2"],
+  "version": "1.1.0"
+}

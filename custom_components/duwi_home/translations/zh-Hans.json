@@ -1,0 +1,95 @@
+{
+  "entity": {
+    "climate": {
+      "duwi_climate": {
+        "state_attributes": {
+          "fan_mode": {
+            "state": {
+              "auto": "自动",
+              "extreme_strong": "极强",
+              "super_strong": "超强",
+              "strong": "强劲",
+              "super_high": "超高",
+              "high": "高",
+              "mid_high": "中高",
+              "mid": "中",
+              "mid_low": "中低",
+              "low": "低",
+              "super_low": "超低",
+              "extreme_low": "极低",
+              "super_quiet": "超静音",
+              "stop": "停止"
+            }
+          },
+          "preset_mode": {
+            "state": {
+              "mode": "锁定模式",
+              "mode_wind": "锁定模式&风速",
+              "mode_wind_temp": "锁定模式&风速&温度",
+              "child": "童锁",
+              "lock": "全锁",
+              "half_lock": "半锁",
+              "unlock": "解锁",
+              "auto": "自动",
+              "manual": "手动",
+              "timing": "定时",
+              "heat_exchange": "热交换",
+              "common": "普通",
+              "indoor_loop": "内循环",
+              "outdoor_loop": "外循环",
+              "air": "换气",
+              "wet": "除湿",
+              "fresh": "新风",
+              "fresh_wet": "新风除湿",
+              "program": "程序",
+              "ventilate": "通风",
+              "exhaust": "排风",
+              "smart": "智能",
+              "powerful": "强力",
+              "cold_room": "冷房",
+              "heat_room": "暖房",
+              "energy_recycle": "节能",
+              "night": "夜间",
+              "holiday": "假日",
+              "sleep": "睡眠",
+              "clean": "净化",
+              "pass": "旁通",
+              "pipeline_clean": "管道清洗",
+              "frost": "除霜",
+              "max": "MAX"
+            }
+          }
+        }
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "开发者认证",
+        "description": "请输入\n 您的认证信息，您的**应用编码**和**应用密钥**。\n 您的Duwi智能账号信息 **手机号** 和 **密码**。",
+        "data": {
+          "app_key": "应用编码",
+          "app_secret": "应用密钥",
+          "phone": "手机号",
+          "password": "密码"
+        }
+      },
+      "select_house": {
+        "title": "选择您的房屋",
+        "description": "您可以选择您拥有的房屋（之前添加的房屋已被排除）。",
+        "data": {
+          "house_no": "您拥有的房屋"
+        }
+      }
+    },
+    "error": {
+      "auth_error": "出现异常 {input}，状态码：{code}",
+      "invalid_auth": "无效的认证 {code}",
+      "fetch_house_info_error": "获取房屋信息出现异常 ，状态码：{code}",
+      "no_houses_found_error": "在这个账户未找到可添加的房屋",
+      "sys_error": "系统错误，状态码：{code}",
+      "unknown_error": "未知错误，状态码：{code}"
+    }
+  }
+}
