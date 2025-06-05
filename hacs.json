@@ -1,5 +1,6 @@
 {
     "name": "Duwi Home",
     "homeassistant": "2024.7.4",
-     "hacs": "2.0.1"
+    "hacs": "2.0.1",
+    "country": "CN"
 }
