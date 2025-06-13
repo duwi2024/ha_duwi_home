@@ -9,5 +9,5 @@
   "issue_tracker": "https://github.com/duwi2024/ha_duwi_home/issues",
   "loggers": ["Duwi Home"],
   "requirements": ["websockets==14.2"],
-  "version": "1.1.1"
+  "version": "1.1.3"
 }
