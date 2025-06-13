@@ -6,8 +6,8 @@
 
 > Home Assistant 版本要求：
 >
-> - Core $\geq$ 2024.7.4
-> - Operating System $\geq$ 12.3
+> - Core >= 2024.7.4
+> - Operating System >= 12.3
 
 ### 方法 1：通过 [Samba](https://github.com/home-assistant/addons/tree/master/samba) 或 [FTPS](https://github.com/hassio-addons/addon-ftp) 手动安装
 
@@ -16,7 +16,6 @@
 
  ### 方法 2: [HACS](https://hacs.xyz/)
 
-HACS > 右上角三个点 > Custom repositories > Repository: https://github.com/duwi2024/ha_duwi_home.git & Category or Type: Integration > ADD > 点击 HACS 的 New 或 Available for download 分类下的 Duwi Home ，进入集成详情页  > DOWNLOAD
+HACS > 在搜索框中输入 Duwi Home > 点击 Duwi Home ，进入集成详情页 > 下载
 
-> 迪惟集成暂未添加到 HACS 商店，敬请期待。
 
