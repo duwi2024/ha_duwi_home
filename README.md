@@ -6,8 +6,8 @@
 
 > Home Assistant 版本要求：
 >
-> - Core >= 2024.7.4
-> - Operating System >= 12.3
+> - Core >= 2025.1.0
+> - Operating System >= 14.0
 
 ### 方法 1：通过 [Samba](https://github.com/home-assistant/addons/tree/master/samba) 或 [FTPS](https://github.com/hassio-addons/addon-ftp) 手动安装
 

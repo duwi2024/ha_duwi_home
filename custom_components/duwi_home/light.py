@@ -4,7 +4,7 @@ import time
 from typing import Any
 
 from homeassistant.components.light import LightEntity, LightEntityDescription, ColorMode, ATTR_BRIGHTNESS, \
-    ATTR_COLOR_TEMP, ATTR_HS_COLOR
+    ATTR_COLOR_TEMP_KELVIN, ATTR_HS_COLOR
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -280,9 +280,9 @@ class DuwiLightEntity(DuwiEntity, LightEntity):
                     "light": int(round(kwargs[ATTR_BRIGHTNESS] / 255 * 100))
                 }
 
-        if ATTR_COLOR_TEMP in kwargs:
+        if ATTR_COLOR_TEMP_KELVIN in kwargs:
             command = {
-                "color_temp": int(1000000 / kwargs[ATTR_COLOR_TEMP] // 100 * 100)
+                "color_temp": int(1000000 / kwargs[ATTR_COLOR_TEMP_KELVIN] // 100 * 100)
             }
 
         if ATTR_HS_COLOR in kwargs:
