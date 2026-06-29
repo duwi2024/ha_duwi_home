@@ -596,7 +596,7 @@ class Manager:
                     refresh_token_data = await self._refresh_token_repository.refresh()
                     auth_data = refresh_token_data.get("data", {})
                     self._token_listener.update_token(
-                        is_refresh=refresh_token_data.get("code ") == Code.SUCCESS.value,
+                        is_refresh=refresh_token_data.get("code") == Code.SUCCESS.value,
                         token_info={
                             "access_token": auth_data.get("accessToken"),
                             "refresh_token": auth_data.get("refreshToken")
