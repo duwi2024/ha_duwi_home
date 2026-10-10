@@ -1,0 +1,46 @@
+{
+    "config":{
+        "step":{
+            "user":{
+                "title":"Duwi Smart Home",
+                "description":"Please enter your authentication information:\n Your Duwi Developer Authorization information, **application code** and **application key**. Your Duwi Smart Account information, **mobile phone number** and **password**.",
+                "data":{
+                    "app_key":"Application Code",
+                    "app_secret":"Application Key",
+                    "phone":"Mobile Phone Number",
+                    "password":"Password"
+                }
+            },
+            "select_house":{
+                "title":"Select House",
+                "description":"Please select the house you want to add to Home Assistant.",
+                "data":{
+                    "house_no":"House"
+                }
+            },
+            "reauth":{
+                "title":"Re-authenticate",
+                "description":"Your Duwi Smart account needs re-authentication. Please enter your password to continue.",
+                "data":{
+                    "app_key":"Application Code",
+                    "app_secret":"Application Key",
+                    "phone":"Mobile Phone Number",
+                    "password":"Password"
+                }
+            }
+        },
+        "error":{
+            "auth_error":"Authentication failed, {error_msg}",
+            "no_houses":"{error_msg}",
+            "all_houses_configured":"All houses are already configured, no need to add duplicate.",
+            "invalid_house":"Selected house is invalid",
+            "entry_not_found":"Configuration entry not found",
+            "unknown_error":"{error_msg}",
+            "duwi_iot_error":"Duwi IoT error: {error_msg}"
+        },
+        "abort":{
+            "already_configured":"This house has already been configured",
+            "reauth_successful":"Re-authentication successful"
+        }
+    }
+}

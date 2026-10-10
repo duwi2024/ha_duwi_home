@@ -1,164 +1,215 @@
+"""Support for Duwi Home sensors."""
+import logging
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntityDescription, SensorEntity, SensorDeviceClass, SensorStateClass
-from homeassistant.const import UnitOfTemperature, PERCENTAGE, ILLUMINANCE, CONCENTRATION_MILLIGRAMS_PER_CUBIC_METER, \
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER, CONCENTRATION_PARTS_PER_MILLION, LIGHT_LUX
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    LIGHT_LUX,
+    PERCENTAGE,
+    UnitOfDensity,
+    UnitOfLength,
+    UnitOfRatio,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .duwi_smarthome_sdk.base.manager import Manager
-from .duwi_smarthome_sdk.base.customer_device import CustomerDevice
-from . import DuwiConfigEntry
+from .base import DuwiDeviceEntity
+from .const import DOMAIN, HOUSE_NO, MANUFACTURER, SIGNAL_DEVICE_UPDATE
+from .duwi_iot.duwi_manager import DuwiManager
 
-from .base import DuwiEntity
-from .const import DUWI_DISCOVERY_NEW, DPCode, DOMAIN, _LOGGER
+_LOGGER = logging.getLogger(__name__)
 
-SENSOR_TYPE_MAP = {
-    "7-001-001": ["temp"],
-    "7-002-001": ["humidity"],
-    "7-003-001": ["bright"],
-    "7-004-001": ["hcho"],
-    "7-005-001": ["pm25"],
-    "7-006-001": ["co2"],
-    "7-007-001": ["iqa"],
-    "7-008-003": ["bright"],
-    "7-009-003": ["bright"],
-    "7-010-001": ["co"],
-    "7-011-001": ["tvoc"],
-    "7-012-001": ["temp", "humidity", "tvoc", "pm25", "hcho", "co2", "pm10"],
-    "7-012-002": ["co"],
-    "7-013-001": ["bright"],
-    "6-001-002": ["temp", "humidity"],
-    "6-002-003": ["temp", "humidity"],
+SENSOR_DEFS: dict[str, tuple[SensorDeviceClass | None, SensorStateClass | None, str, str]] = {
+    "voltage": (SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT, "V", "电压"),
+    "current": (SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT, "A", "电流"),
+    "activepower": (SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, "W", "有功功率"),
+    "electricity": (SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING, "kWh", "电量"),
+    "ac_real_temp": (SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, UnitOfTemperature.CELSIUS, "温度"),
+    "ac_real_humidity": (SensorDeviceClass.HUMIDITY, SensorStateClass.MEASUREMENT, PERCENTAGE, "湿度"),
+    "fh_real_temp": (SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, UnitOfTemperature.CELSIUS, "温度"),
+    "fh_real_humidity": (SensorDeviceClass.HUMIDITY, SensorStateClass.MEASUREMENT, PERCENTAGE, "湿度"),
+    "fa_real_humidity": (SensorDeviceClass.HUMIDITY, SensorStateClass.MEASUREMENT, PERCENTAGE, "湿度"),
+    "fa_real_temp": (SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, UnitOfTemperature.CELSIUS, "温度"),
+    "tc_real_temp": (SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, UnitOfTemperature.CELSIUS, "温度"),
+    "tc_real_humidity": (SensorDeviceClass.HUMIDITY, SensorStateClass.MEASUREMENT, PERCENTAGE, "湿度"),
+    "temp_value": (SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, UnitOfTemperature.CELSIUS, "温度"),
+    "humidity_value": (SensorDeviceClass.HUMIDITY, SensorStateClass.MEASUREMENT, PERCENTAGE, "湿度"),
+    "bright_value": (SensorDeviceClass.ILLUMINANCE, SensorStateClass.MEASUREMENT, LIGHT_LUX, "光照度"),
+    "hcho_value": (None, SensorStateClass.MEASUREMENT, UnitOfDensity.MILLIGRAMS_PER_CUBIC_METER, "甲醛"),
+    "pm25_value": (SensorDeviceClass.PM25, SensorStateClass.MEASUREMENT, UnitOfDensity.MICROGRAMS_PER_CUBIC_METER, "PM2.5"),
+    "co2_value": (SensorDeviceClass.CO2, SensorStateClass.MEASUREMENT, UnitOfRatio.PARTS_PER_MILLION, "二氧化碳"),
+    "iaq_value": (SensorDeviceClass.AQI, SensorStateClass.MEASUREMENT, None, "空气质量IAQ"),
+    "co_value": (SensorDeviceClass.CO, SensorStateClass.MEASUREMENT, UnitOfRatio.PARTS_PER_MILLION, "一氧化碳"),
+    "tvoc_value": (SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS, SensorStateClass.MEASUREMENT, UnitOfDensity.MILLIGRAMS_PER_CUBIC_METER, "TVOC"),
+    "pm10_value": (SensorDeviceClass.PM10, SensorStateClass.MEASUREMENT, UnitOfDensity.MICROGRAMS_PER_CUBIC_METER, "PM10"),
+    "distance": (SensorDeviceClass.DISTANCE, SensorStateClass.MEASUREMENT, UnitOfLength.METERS, "距离"),
 }
 
-SENSOR_TYPE_DICT = {
-    "temp": {
-        "unit_of_measurement": UnitOfTemperature.CELSIUS,
-        "device_class": SensorDeviceClass.TEMPERATURE,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "humidity": {
-        "unit_of_measurement": PERCENTAGE,
-        "device_class": SensorDeviceClass.HUMIDITY,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "bright": {
-        "unit_of_measurement": LIGHT_LUX,
-        "device_class": SensorDeviceClass.ILLUMINANCE,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "hcho": {
-        "unit_of_measurement": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-        "device_class": SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "pm25": {
-        "unit_of_measurement": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-        "device_class": SensorDeviceClass.PM25,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "pm10": {
-        "unit_of_measurement": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-        "device_class": SensorDeviceClass.PM10,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "co2": {
-        "unit_of_measurement": CONCENTRATION_PARTS_PER_MILLION,
-        "device_class": SensorDeviceClass.CO2,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "iqa": {
-        "unit_of_measurement": CONCENTRATION_PARTS_PER_MILLION,
-        "device_class": SensorDeviceClass.AQI,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "co": {
-        "unit_of_measurement": CONCENTRATION_PARTS_PER_MILLION,
-        "device_class": SensorDeviceClass.CO,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "tvoc": {
-        "unit_of_measurement": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-        "device_class": SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS,
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-}
-SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
-    sensor_id: tuple(
-        SensorEntityDescription(
-            key=getattr(DPCode, sensor_type.upper()),
-            name="",
-            translation_key=sensor_type,
-            device_class=SENSOR_TYPE_DICT[sensor_type].get("device_class"),
-            unit_of_measurement=SENSOR_TYPE_DICT[sensor_type].get("unit_of_measurement"),
-            state_class=SENSOR_TYPE_DICT[sensor_type].get("state_class"),
-        ) for sensor_type in sensor_types
-    )
-    for sensor_id, sensor_types in SENSOR_TYPE_MAP.items()
+SENSOR_DEVICE_TYPES: dict[str, list[str]] = {
+    "1-001": ["voltage", "current", "activepower", "electricity"],
+    "1-002": ["voltage", "current", "activepower", "electricity"],
+    "1-003": ["voltage", "current", "activepower", "electricity"],
+    "7-001": ["temp_value"],
+    "7-002": ["humidity_value"],
+    "7-003": ["bright_value"],
+    "7-004": ["hcho_value"],
+    "7-005": ["pm25_value"],
+    "7-006": ["co2_value"],
+    "7-007": ["iaq_value"],
+    "7-008-003": ["bright_value"],
+    "7-008-004": ["bright_value"],
+    "7-008-005": ["bright_value", "distance"],
+    "7-008-006": ["bright_value"],
+    "7-009-003": ["bright_value"],
+    "7-009-011": ["bright_value"],
+    "7-010": ["co_value"],
+    "7-011": ["tvoc_value"],
+    "7-012-001": ["temp_value", "humidity_value", "tvoc_value", "pm25_value", "hcho_value", "co2_value", "pm10_value"],
+    "7-012-002": ["co_value"],
+    "7-013-001": ["bright_value"],
+    "7-013-002": ["bright_value"],
+    "7-013-003": ["bright_value"],
+    "7-013-004": ["bright_value"],
+    "7-013-005": ["bright_value"],
+    "7-016-001": ["temp_value", "humidity_value"],
+    "5-001": ["ac_real_temp"],
+    "5-002": ["fh_real_humidity", "fh_real_temp"],
+    "5-003": ["fa_real_humidity", "fa_real_temp"],
+    "5-005": ["tc_real_temp", "tc_real_humidity"],
+    "5-003-002":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-003":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-004":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-010":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-020":{"fa_real_humidity", "fa_real_temp","pm25_value"},
+    "5-003-021":{"fa_real_humidity", "fa_real_temp","co2_value"},
+    "5-003-023":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-025":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-029":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-030":{"fa_real_humidity", "fa_real_temp","pm25_value"},
+    "5-003-031":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-032":{"fa_real_humidity", "fa_real_temp","pm25_value"},
+    "5-003-033":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-036":{"fa_real_humidity", "fa_real_temp","pm25_value"},
+    "5-003-041":{"fa_real_humidity", "fa_real_temp","pm25_value"},
+    "5-003-045":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-054":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-059":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-067":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-071":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-072":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-075":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-081":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
+    "5-003-083":{"fa_real_humidity", "fa_real_temp","co2_value","pm25_value"},
 }
 
 
 async def async_setup_entry(
-        hass: HomeAssistant, entry: DuwiConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up duwi sensors dynamically through duwi discovery."""
-    hass_data = hass.data[DOMAIN].get(entry.entry_id)
+    """Set up the Duwi Home sensor platform."""
+    data = hass.data[DOMAIN].get(entry.entry_id, {})
+    if not data:
+        return
 
-    @callback
-    def async_discover_device(device_ids: list[str]) -> None:
-        """Discover and add a discovered duwi sensor."""
-        entities: list[DuwiSensorEntity] = []
-        for device_id in device_ids:
-            device = hass_data.manager.device_map.get(device_id)
-            if not device:
-                _LOGGER.warning("Device not found in device_map: %s", device_id)
-                continue
-            if descriptions := SENSORS.get(device.device_sub_type_no):
-                if device.device_sub_type_no == "6-002-003" or device.device_sub_type_no == "6-001-002":
-                    entities.extend(
-                        DuwiSensorEntity(device, hass_data.manager, description)
-                        for description in descriptions
-                        if device.value.get("additional_property", {}).get(description.key)
-                    )
-                else:
-                    entities.extend(
-                        DuwiSensorEntity(device, hass_data.manager, description)
-                        for description in descriptions
-                    )
+    duwi_manager: DuwiManager | None = data.get("DuwiManager")
+    devices: list[dict[str, Any]] = data.get("devices", [])
+    if not duwi_manager or not devices:
+        return
 
+    entities: list[DuwiSensor] = []
+    for device in devices:
+        if device.get("is_use", 0) != 1:
+            continue
+        value: dict[str, Any] = device.get("value", {}) or {}
+        device_type = device.get("device_type_no", "")
+        device_sub_type = device.get("device_sub_type_no", "")
+        sensor_keys = SENSOR_DEVICE_TYPES.get(device_sub_type) or SENSOR_DEVICE_TYPES.get(device_type)
+        if sensor_keys is None:
+            continue
+
+        for value_key in sensor_keys:
+            if value_key in value:
+                device_class, state_class, unit, name = SENSOR_DEFS[value_key]
+                entities.append(
+                    DuwiSensor(duwi_manager, entry.data.get(HOUSE_NO), device, value_key, device_class, state_class, unit, name)
+                )
+
+    if entities:
         async_add_entities(entities)
-
-    async_discover_device([*hass_data.manager.device_map])
-
-    entry.async_on_unload(
-        async_dispatcher_connect(hass, DUWI_DISCOVERY_NEW, async_discover_device)
-    )
+        _LOGGER.info("Added %d sensor entities", len(entities))
 
 
-class DuwiSensorEntity(DuwiEntity, SensorEntity):
-    """Duwi Switch Device."""
+class DuwiSensor(DuwiDeviceEntity, SensorEntity):
+    """Representation of a Duwi Home sensor."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
 
     def __init__(
-            self,
-            device: CustomerDevice,
-            device_manager: Manager,
-            description: SensorEntityDescription,
+        self,
+        duwi_manager: DuwiManager,
+        house_no: str,
+        device_data: dict[str, Any],
+        value_key: str,
+        device_class: SensorDeviceClass | None,
+        state_class: SensorStateClass | None,
+        unit: str,
+        name: str,
     ) -> None:
-        """Init DuwiHaSwitch."""
-        super().__init__(device, device_manager)
-        self.entity_description = description
-        self._attr_unique_id = f"{super().unique_id}{description.key}"
+        """Initialize the sensor."""
+        super().__init__(house_no, device_data)
+        self._duwi_manager = duwi_manager
+        self._value_key = value_key
 
-    @property
-    def native_unit_of_measurement(self) -> str | None:
-        """Return the unit of measurement of the sensor, if any."""
-        return self.entity_description.unit_of_measurement
+        self._attr_unique_id = f"duwi_sensor_{self._duwi_device_no}_{value_key}"
+        self._attr_name = name
+        self._attr_device_class = device_class
+        self._attr_state_class = state_class
+        self._attr_native_unit_of_measurement = unit
 
-    @property
-    def native_value(self) -> Any:
-        """Return the state of the sensor."""
-        return self.device.value.get(self.entity_description.key + "_value")
+        self._attr_native_value = self._duwi_device_value.get(value_key)
+        self._attr_available = self._duwi_is_online
 
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, self._duwi_device_no)},
+            name=self._duwi_device_name,
+            manufacturer=MANUFACTURER,
+            model=self._duwi_device_sub_type_no,
+            serial_number=self._duwi_device_no,
+        )
 
+    async def async_added_to_hass(self) -> None:
+        """Run when entity about to be added to hass."""
+        await super().async_added_to_hass()
+        signal = SIGNAL_DEVICE_UPDATE.format(self._duwi_device_no)
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, signal, self._handle_update)
+        )
+
+    @callback
+    def _handle_update(self, data: dict[str, Any]) -> None:
+        """Handle device update from RPS or LAN."""
+        if data.get("deviceNo") != self._duwi_device_no:
+            return
+
+        self._update_device_value(data)
+
+        if self._value_key in data:
+            self._attr_native_value = data[self._value_key]
+
+        if "online" in data:
+            self._attr_available = bool(data["online"])
+        else:
+            self._attr_available = True
+
+        self.async_write_ha_state()

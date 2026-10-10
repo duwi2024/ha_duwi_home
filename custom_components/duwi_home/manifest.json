@@ -1,13 +1,14 @@
 {
-  "domain": "duwi_home",
-  "name": "Duwi Home",
-  "codeowners": ["@duwi2024"],
-  "config_flow": true,
-  "documentation": "https://github.com/duwi2024/ha_duwi_home/blob/main/README.md",
-  "integration_type": "hub",
-  "iot_class": "cloud_push",
-  "issue_tracker": "https://github.com/duwi2024/ha_duwi_home/issues",
-  "loggers": ["Duwi Home"],
-  "requirements": ["websockets==15.0.1"],
-  "version": "1.1.5"
+    "domain": "duwi_home",
+    "name": "Duwi Home",
+    "codeowners": [
+        "@duwi2024"
+    ],
+    "config_flow": true,
+    "integration_type": "hub",
+    "iot_class": "cloud_push",
+    "quality_scale": "bronze",
+    "requirements": ["aiosqlite==0.21.0", "cryptography>=41.0.0"],
+    "loggers": ["duwi_home"],
+    "version": "1.1.6"
 }

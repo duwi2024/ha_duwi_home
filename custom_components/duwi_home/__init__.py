@@ -1,354 +1,252 @@
-"""Support for Duwi Smart devices."""
-import asyncio
-import functools
-import time
-from typing import Any, NamedTuple
+"""Duwi Home Integration."""
+import logging
+from typing import Any
 
-from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform, __version__
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CoreState, HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import (
-    config_validation as cv,
+    area_registry as ar,
     device_registry as dr,
-    storage,
+    floor_registry as fr,
 )
-from homeassistant.helpers.dispatcher import dispatcher_send
 
 from .const import (
-    _LOGGER,
     ACCESS_TOKEN,
-    ADDRESS,
+    ACCESS_TOKEN_EXPIRE_TIME,
     APP_KEY,
     APP_SECRET,
-    APP_VERSION,
-    CLIENT,
-    CLIENT_MODEL,
-    CLIENT_VERSION,
-    CONF_TOKEN_INFO,
     DOMAIN,
-    DUWI_DISCOVERY_NEW,
-    DUWI_HA_ACCESS_TOKEN,
-    DUWI_HA_SIGNAL_UPDATE_ENTITY,
-    DUWI_SCENE_UPDATE,
-    HOUSE_KEY,
+    FIRST_INIT,
+    HOUSE_LAN_SECRET_KEY,
     HOUSE_NAME,
     HOUSE_NO,
-    MANUFACTURER,
-    PASSWORD,
-    PHONE,
     REFRESH_TOKEN,
-    SUPPORTED_PLATFORMS,
-    WS_ADDRESS,
+    REFRESH_TOKEN_EXPIRE_TIME,
+    SERVICE_REFRESH_DEVICES,
 )
-from .duwi_lan_sdk.service.lan_process import LanProcess
-from .duwi_repository_sdk.model.device import Device
-from .duwi_smarthome_sdk.base.customer_api import CustomerApi, SharingTokenListener
-from .duwi_smarthome_sdk.base.customer_device import CustomerDevice
-from .duwi_smarthome_sdk.base.customer_scene import CustomerScene
-from .duwi_smarthome_sdk.base.manager import Manager, SharingDeviceListener
+from .duwi_iot.db.duwi_database import DuwiDatabase
+from .duwi_iot.duwi_manager import DuwiManager
+from .duwi_iot.smarthome.duwi_client import UpdateTokenListener
 
-type DuwiConfigEntry = ConfigEntry[HomeAssistantDuwiData]
+_LOGGER = logging.getLogger(__name__)
 
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(domain=DOMAIN)
+PLATFORMS: list[str] = ["switch", "sensor", "binary_sensor", "light", "cover", "climate", "media_player", "scene"]
 
+class DuwiTokenRefreshListener(UpdateTokenListener):
+    """Listener for Duwi token refresh events."""
 
-class HomeAssistantDuwiData(NamedTuple):
-    """Duwi data stored in the Home Assistant data object."""
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
+        """Initialize the listener."""
+        self._hass = hass
+        self._entry = entry
 
-    manager: Manager
-    listener: SharingDeviceListener
+    async def on_token_refreshed(self, access_token: str, refresh_token: str, access_token_expire_time: int, refresh_token_expire_time: int):
+        """Handle token refresh event."""
+        _LOGGER.info("Token refreshed for house: %s", self._entry.data.get(HOUSE_NAME))
 
+        new_data = self._entry.data.copy()
+        new_data[ACCESS_TOKEN] = access_token
+        new_data[REFRESH_TOKEN] = refresh_token
+        new_data[ACCESS_TOKEN_EXPIRE_TIME] = access_token_expire_time
+        new_data[REFRESH_TOKEN_EXPIRE_TIME] = refresh_token_expire_time
 
-async def async_setup(hass: HomeAssistant, hass_config: dict) -> bool:
-    """Set up the Duwi Smart Devices integration."""
+        await self._hass.config_entries.async_update_entry(self._entry, data=new_data)
 
-    # Check for existing config entries for this integration
-    hass.data.setdefault(DOMAIN, {})
-    if not hass.config_entries.async_entries(DOMAIN):
-        # No entries found, initiate the configuration flow
-        hass.async_create_task(
-            hass.config_entries.flow.async_init(
-                DOMAIN, context={"source": config_entries.SOURCE_IMPORT}, data={}
-            )
-        )
+async def async_sync_floors_and_rooms_to_ha(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
+    """Sync duwi floors and rooms to HA floor and area registries."""
+    data = hass.data[DOMAIN][entry.entry_id]
+    floors = data.get("floors", [])
+    rooms = data.get("rooms", [])
+    devices = data.get("devices", [])
 
-    # Setup was successful
-    return True
+    floor_reg = fr.async_get(hass)
+    area_reg = ar.async_get(hass)
+    dev_reg = dr.async_get(hass)
 
+    floor_no_to_floor_id: dict[str, str] = {}
 
-async def async_setup_entry(hass: HomeAssistant, entry: DuwiConfigEntry) -> bool:
-    hass.data.setdefault(DOMAIN, {})
-    token_listener = TokenListener(hass, entry)
-    # 全局lp 只构造一个
-    lp = hass.data[DOMAIN].get("lp") if hass.data[DOMAIN].get("lp") else LanProcess()
-    manager: Manager = Manager(
-        id=entry.entry_id,
-        customer_api=CustomerApi(
-            address=entry.data[ADDRESS],
-            ws_address=entry.data[WS_ADDRESS],
-            app_key=entry.data[APP_KEY],
-            app_secret=entry.data[APP_SECRET],
-            house_no=entry.data[HOUSE_NO],
-            house_name=entry.data[HOUSE_NAME],
-            access_token=entry.data[ACCESS_TOKEN],
-            refresh_token=entry.data[REFRESH_TOKEN],
-            client_version=CLIENT_VERSION,
-            client_model=CLIENT_MODEL,
-            app_version=__version__,
-        ),
-        house_key=entry.data.get(HOUSE_KEY),
-        token_listener=token_listener,
-        lp=lp
-    )
-    # 保留原先的名称
-    lp.add_message_listener(manager.handle_lan_message)
-    # start方法只执行一次
-    if not hass.data[DOMAIN].get("lp"):
-        lp.start()
-        hass.data[DOMAIN]["lp"] = lp
-    # Cleanup device registry
-    login_status = await manager.init_manager(entry.data["phone"], entry.data["password"])
-    # 登录失败报错警告
-    _LOGGER.warning("login_status %s", login_status)
-    if not login_status:
-        raise ConfigEntryAuthFailed("用户身份认证失败,请尝试重载集成或者重新添加")
-
-    # 抓取设备
-    is_online = await manager.update_device_cache()
-    listener = DeviceListener(hass, manager)
-    manager.add_device_listener(listener)
-    ids = []
-    if hass.data[DOMAIN].get(entry.entry_id) is not None:
-        old_manager = hass.data[DOMAIN].get(entry.entry_id, {}).manager
-        ids = await compare_manager(old_manager, manager, None)
-    else:
-        devices = manager.db_repository.list_entities(Device)
-        ids = await compare_manager(None, manager, devices)
-    if is_online:
-        await manager.save_data_to_local()
-    hass.data[DOMAIN][entry.entry_id] = HomeAssistantDuwiData(manager=manager, listener=listener)
-    # 清除不合适的设备
-    await cleanup_device_registry(hass, ids)
-    hass.data[DOMAIN].setdefault("existing_house", []).append(entry.data[HOUSE_NO])
-    hass.loop.create_task(manager.is_connected())
-    # 开启全局的ws监听
-    if is_online:
-        await hass.async_create_task(manager.ws.reconnect())
-    else:
-        hass.loop.create_task(manager.ws.reconnect())
-
-    hass.loop.create_task(manager.ws.listen())
-    hass.loop.create_task(manager.ws.keep_alive())
-
-    await hass.config_entries.async_forward_entry_setups(
-        entry, SUPPORTED_PLATFORMS
-    )
-    return True
-
-
-async def compare_manager(old_manager: Manager | None, new_manager: Manager, devices: list[Device] | None) -> list:
-    ids = []
-    if not old_manager:
-        # _LOGGER.debug("old_manager is None")
-        for d in devices:
-            d2 = new_manager.device_map.get(d.device_no)
-            if not d2:
-                # _LOGGER.debug("device not in new manager %s", d.device_no)
-                continue
-            # 如果区域不一样的,以云端新的区域为主,设备类型也是,如果类型不一样就返回设备的id
-            if d.room_no != d2.room_no or d.device_sub_type_no != d2.device_sub_type_no:
-                ids.append(d.device_no)
-        return ids
-    # 如果区域不一样的,以云端新的区域为主,设备类型也是,如果类型不一样就返回设备的id
-    for dev_id in old_manager.device_map:
-        d1 = old_manager.device_map.get(dev_id)
-        d2 = new_manager.device_map.get(dev_id)
-        if not d2:
-            # _LOGGER.debug("device not in new manager %s", dev_id)
+    for floor in floors:
+        floor_no = floor.get("floor_no")
+        floor_name = floor.get("floor_name")
+        if not floor_no or not floor_name:
             continue
-        if d1.room_no != d2.room_no or d1.device_sub_type_no != d2.device_sub_type_no:
-            ids.append(dev_id)
-    return ids
 
+        alias = f"{DOMAIN}:{floor_no}"
+        ha_floor = None
 
-async def cleanup_device_registry(hass: HomeAssistant, device_ids: list) -> None:
-    """Remove deleted device registry entry if there are no remaining entities."""
-    # _LOGGER.debug("device_ids %s", device_ids)
-    device_registry = dr.async_get(hass)
-    for dev_id, device_entry in list(device_registry.devices.items()):
-        for item in device_entry.identifiers:
-            if item[0] == DOMAIN:
-                # 准备移除duwi的设备
-                read_to_remove = True
-                for v in hass.data[DOMAIN].values():
-                    if hasattr(v, 'manager'):
-                        # 如果设备编号是在这个
-                        if item[1] in v.manager.device_map:
-                            read_to_remove = False
-                            break
-                # _LOGGER.debug("read_to_remove %s", read_to_remove)
-                # _LOGGER.debug("dev_id in device_ids %s", item[1] in device_ids)
+        for f in floor_reg.async_list_floors():
+            if alias in f.aliases:
+                ha_floor = f
+                break
 
-                if read_to_remove or item[1] in device_ids:
-                    device_name = device_entry.name
-                    device_registry.async_remove_device(dev_id)
+        if not ha_floor:
+            existing = floor_reg.async_get_floor_by_name(floor_name)
+            if existing:
+                ha_floor = floor_reg.async_update(
+                    existing.floor_id, aliases=existing.aliases | {alias}
+                )
+            else:
+                ha_floor = floor_reg.async_create(floor_name, aliases={alias})
 
+        if ha_floor:
+            floor_no_to_floor_id[floor_no] = ha_floor.floor_id
 
-async def async_unload_entry(hass: HomeAssistant, entry: DuwiConfigEntry) -> bool:
-    """Unloading the Duwi platforms."""
-    # Attempt to unload all platforms associated with the entry.
-    await hass.data[DOMAIN][entry.entry_id].manager.unload()
-    house_no = entry.data.get(HOUSE_NO)
-    if house_no in hass.data[DOMAIN].get("existing_house"):
-        hass.data[DOMAIN]["existing_house"].remove(house_no)
+    room_no_to_area_id: dict[str, str] = {}
 
-    if lp := hass.data[DOMAIN].get("lp"):
-        _LOGGER.info("clear_hosts from async_unload_entry")
-        lp.clear_hosts(entry.entry_id)
+    for room in rooms:
+        room_no = room.get("room_no")
+        room_name = room.get("room_name")
+        room_floor_no = room.get("floor_no")
+        if not room_no or not room_name:
+            continue
 
-    return await hass.config_entries.async_unload_platforms(
-        entry, SUPPORTED_PLATFORMS
+        floor_id = floor_no_to_floor_id.get(room_floor_no)
+        alias = f"{DOMAIN}:{room_no}"
+        ha_area = None
+
+        for a in area_reg.async_list_areas():
+            if alias in a.aliases:
+                ha_area = a
+                break
+
+        if not ha_area:
+            existing = area_reg.async_get_area_by_name(room_name)
+            if existing:
+                ha_area = area_reg.async_update(
+                    existing.id, aliases=existing.aliases | {alias}
+                )
+            else:
+                ha_area = area_reg.async_create(
+                    room_name, aliases={alias}, floor_id=floor_id
+                )
+
+        if ha_area:
+            room_no_to_area_id[room_no] = ha_area.id
+
+    for device in devices:
+        device_no = device.get("device_no")
+        room_no = device.get("room_no")
+        if not device_no or not room_no:
+            continue
+
+        area_id = room_no_to_area_id.get(room_no)
+        if not area_id:
+            continue
+
+        ha_device = dev_reg.async_get_device({(DOMAIN, device_no)})
+        if ha_device:
+            dev_reg.async_update_device(ha_device.id, area_id=area_id)
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Set up Duwi Home integration."""
+    hass.data.setdefault(DOMAIN, {})
+
+    async def async_refresh_devices_service(call: ServiceCall) -> None:
+        """Handle the refresh devices service call."""
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if entry.entry_id in hass.data[DOMAIN]:
+                data = hass.data[DOMAIN][entry.entry_id]
+                duwi_manager: DuwiManager | None = data.get("DuwiManager")
+                if duwi_manager:
+                    _LOGGER.info("Manually refreshing devices for %s", entry.data.get(HOUSE_NAME))
+                    await duwi_manager.start()
+                    await hass.config_entries.async_reload(entry.entry_id)
+
+    hass.services.async_register(DOMAIN, SERVICE_REFRESH_DEVICES, async_refresh_devices_service)
+
+    return True
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Duwi Home from a config entry."""
+
+    # Initialize DuwiManager
+    duwi_manager = DuwiManager(
+        entry.data.get(APP_KEY),
+        entry.data.get(APP_SECRET),
+        entry.data.get(ACCESS_TOKEN),
+        entry.data.get(ACCESS_TOKEN_EXPIRE_TIME),
+        entry.data.get(REFRESH_TOKEN),
+        entry.data.get(REFRESH_TOKEN_EXPIRE_TIME),
+        entry.data.get(HOUSE_NO),
+        entry.data.get(HOUSE_LAN_SECRET_KEY),
+        hass,
+        entry,
+        DuwiTokenRefreshListener(hass, entry),
     )
 
+    hass.data[DOMAIN][entry.entry_id] = {
+        "DuwiManager": duwi_manager,
+    }
 
-async def async_remove_entry(hass: HomeAssistant, entry: DuwiConfigEntry) -> bool:
-    """Remove a config entry.
-
-    This will revoke the credentials from Duwi.
-    """
-    manager = hass.data[DOMAIN][entry.entry_id].manager
-    await cleanup_device_registry(hass, manager.device_map.keys())
-    await manager.unload(True)
-    hass.data[DOMAIN].pop(entry.entry_id)
-
-    house_no_list: [] = hass.data[DOMAIN].get("existing_house")
-    if lp := hass.data[DOMAIN].get("lp"):
-        _LOGGER.info("clear_hosts from async_remove_entry")
-        lp.clear_hosts(entry.entry_id)
-        if len(house_no_list) == 0:
-            # last entry removed
-            _LOGGER.info("last entry removed from async_remove_entry")
-            lp.stop()
-            hass.data[DOMAIN].pop("lp")
-
-    return await hass.config_entries.async_unload_platforms(
-        entry, SUPPORTED_PLATFORMS
-    )
-
-
-class DeviceListener(SharingDeviceListener):
-    """Device Update Listener."""
-
-    def __init__(
-            self,
-            hass: HomeAssistant,
-            manager: Manager,
-    ) -> None:
-        """Init DeviceListener."""
-        self.hass = hass
-        self.manager = manager
-
-    def update_scene(self, scene: CustomerScene):
-        dispatcher_send(self.hass, f"{DUWI_SCENE_UPDATE}_{scene.scene_no}")
-
-    def update_device(self, device: CustomerDevice) -> None:
-        """Update device status."""
-        dispatcher_send(self.hass, f"{DUWI_HA_SIGNAL_UPDATE_ENTITY}_{device.device_no}")
-
-    def add_device(self, device: CustomerDevice) -> None:
-        """Add device added listener."""
-        # Ensure the device isn't present stale
-        self.async_remove_device(device.device_no)
-
-        dispatcher_send(self.hass, DUWI_DISCOVERY_NEW, [device.device_no])
-
-    def remove_device(self, device_no: str) -> None:
-        """Add device removed listener."""
-        self.hass.add_job(self.async_remove_device, device_no)
-
-    def token_listener(self, token_info: dict[str, Any]) -> None:
-        """Add token listener."""
-
-    @callback
-    def async_remove_device(self, device_no: str) -> None:
-        """Remove device from Home Assistant."""
-        device_registry = dr.async_get(self.hass)
-        _LOGGER.info("remove device_no %s", device_no)
-        device_entry = device_registry.async_get_device(
-            identifiers={(DOMAIN, device_no)}
+    start_success = await duwi_manager.start()
+    if not start_success:
+        _LOGGER.error("Failed to start DuwiManager")
+        raise ConfigEntryAuthFailed(
+            "Token expired and could not be refreshed, please re-authenticate"
         )
-        if device_entry is not None:
-            device_registry.async_remove_device(device_entry.id)
 
+    # Forward setup to platforms
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-class TokenListener(SharingTokenListener):
-    """Token listener for upstream token updates."""
+    if hass.state.value == CoreState.running or entry.data.get(FIRST_INIT, False):
+        _LOGGER.debug("sync floors and rooms to HA")
+        await async_sync_floors_and_rooms_to_ha(hass, entry)
+        if entry.data.get(FIRST_INIT, False):
+            # 持久化清除 FIRST_INIT 标记
+            new_data = entry.data.copy()
+            new_data[FIRST_INIT] = False
+            hass.config_entries.async_update_entry(entry, data=new_data)
 
-    def __init__(
-            self,
-            hass: HomeAssistant,
-            entry: DuwiConfigEntry,
-    ) -> None:
-        """Init TokenListener."""
-        self.hass = hass
-        self.entry = entry
+    return True
 
-    def update_token(self, is_refresh: bool, token_info: dict[str, Any] = None) -> None:
-        """Update token info in config entry."""
-        _LOGGER.info("Update token: %s %s", is_refresh, token_info)
-        if is_refresh:
-            data = {
-                PHONE: self.entry.data[PHONE],
-                PASSWORD: self.entry.data[PASSWORD],
-                HOUSE_KEY: self.entry.data[HOUSE_KEY],
-                ADDRESS: self.entry.data[ADDRESS],
-                WS_ADDRESS: self.entry.data[WS_ADDRESS],
-                APP_KEY: self.entry.data[APP_KEY],
-                APP_SECRET: self.entry.data[APP_SECRET],
-                HOUSE_NO: self.entry.data[HOUSE_NO],
-                HOUSE_NAME: self.entry.data[HOUSE_NAME],
-                ACCESS_TOKEN: token_info[ACCESS_TOKEN],
-                REFRESH_TOKEN: token_info[REFRESH_TOKEN],
-            }
-        else:
-            raise ConfigEntryAuthFailed("刷新token失败,请尝试重载集成或者重新添加")
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    if entry.entry_id not in hass.data[DOMAIN]:
+        return True
 
-        @callback
-        def async_update_entry() -> None:
-            """Update config entry."""
-            self.hass.config_entries.async_update_entry(self.entry, data=data)
+    data = hass.data[DOMAIN][entry.entry_id]
 
-        self.hass.add_job(async_update_entry)
+    # Stop DuwiManager
+    duwi_manager = data.get("DuwiManager")
+    if duwi_manager:
+        await duwi_manager.stop()
 
-    async def error_notification(self):  # noqa: D102
-        await self.hass.config_entries.async_reload(self.entry.entry_id)
+    # Unload platforms
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-        await self.hass.components.persistent_notification.async_create(
-                "账户或密码错误，导致授权失败,请尝试检查并重新加载集成!",
-                title="Duwi(BETA)集成故障"
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id)
+        _LOGGER.info("Duwi Home unloaded for house: %s", entry.data.get(HOUSE_NAME))
+
+    return unload_ok
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Remove a config entry."""
+    house_name = entry.data.get(HOUSE_NAME)
+    house_no = entry.data.get(HOUSE_NO)
+
+    _LOGGER.info("Duwi Home removed for house: %s", house_name)
+
+    # Delete all data from SQLite database for this house
+    if house_no:
+        db_path = hass.config.path("duwi_home")
+        db = DuwiDatabase(db_path)
+        try:
+            await db.connect()
+            deleted_count = await db.delete_all_by_house_no(house_no)
+            _LOGGER.info(
+                "Deleted %d rows from database for house: %s",
+                deleted_count,
+                house_name,
             )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to delete database data for house: %s", house_name
+            )
+        finally:
+            await db.close()
 
-def debounce(wait):
-    def decorator(fn):
-        last_call = 0
-        call_pending = None
-
-        @functools.wraps(fn)
-        async def debounced(*args, **kwargs):
-            nonlocal last_call, call_pending
-
-            now = time.time()
-            if now - last_call < wait:
-                if call_pending:
-                    call_pending.cancel()
-                call_pending = asyncio.create_task(asyncio.sleep(wait - (now - last_call)))
-                await call_pending
-
-            last_call = time.time()
-            return await fn(*args, **kwargs)
-
-        return debounced
-
-    return decorator
+    return True

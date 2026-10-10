@@ -1,100 +1,68 @@
+"""Support for Duwi Home scenes."""
+import logging
 from typing import Any
 
 from homeassistant.components.scene import Scene
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.components.switch import (
-    SwitchDeviceClass,
-    SwitchEntity,
-    SwitchEntityDescription,
-)
-from homeassistant.helpers.typing import UndefinedType
 
-from .duwi_smarthome_sdk.base.customer_scene import CustomerScene
-from .duwi_smarthome_sdk.base.manager import Manager
-from .duwi_smarthome_sdk.base.customer_device import CustomerDevice
-from . import DuwiConfigEntry
+from .base import DuwiSceneEntity
+from .const import DOMAIN, HOUSE_NO
+from .duwi_iot.duwi_manager import DuwiManager
 
-from .base import DuwiEntity
-from .const import DUWI_DISCOVERY_NEW, DPCode, DOMAIN, _LOGGER, MANUFACTURER, DUWI_SCENE_UPDATE
-
-SWITCHES: dict[str, tuple[SwitchEntityDescription, ...]] = {
-    "1-001": (
-        SwitchEntityDescription(
-            key=DPCode.SWITCH,
-            name=None,
-            translation_key="duwi_switch",
-            device_class=SwitchDeviceClass.SWITCH,
-        ),
-    ),
-}
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-        hass: HomeAssistant, entry: DuwiConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up duwi sensors dynamically through duwi discovery."""
-    hass_data = hass.data[DOMAIN].get(entry.entry_id)
-    sm = hass_data.manager.scene_map
+    """Set up Duwi Home scene platform."""
+    data = hass.data[DOMAIN].get(entry.entry_id, {})
+    if not data:
+        return
 
-    # TODO 断网的时候状态变化做一下
-    # async_add_entities(DuwiSceneEntity(hass_data.manager, scene) for scene in sm.values())
-    @callback
-    def async_discover_device() -> None:
-        """Discover and add a discovered duwi sensor."""
-        async_add_entities(DuwiSceneEntity(hass_data.manager, scene) for scene in sm.values())
+    duwi_manager: DuwiManager | None = data.get("DuwiManager")
+    scenes: list[dict[str, Any]] = data.get("scenes", [])
+    if not duwi_manager:
+        return
+    if not scenes:
+        return
 
-    async_discover_device()
+    house_no = entry.data.get(HOUSE_NO)
+    entities: list[DuwiScene] = [
+        DuwiScene(duwi_manager, house_no, scene_data)
+        for scene_data in scenes
+        if scene_data.get("is_use") and scene_data.get("is_manual_execute")
+    ]
 
-    entry.async_on_unload(
-        async_dispatcher_connect(hass, DUWI_SCENE_UPDATE, async_discover_device)
-    )
+    if entities:
+        async_add_entities(entities)
 
 
-class DuwiSceneEntity(Scene):
-    """Duwi Switch Device."""
-    _should_poll = False
-    _attr_has_entity_name = True
-    _attr_name = None
+class DuwiScene(DuwiSceneEntity, Scene):
+    """Representation of a Duwi Home scene."""
 
     def __init__(
-            self,
-            scene_manager: Manager,
-            scene: CustomerScene,
+        self,
+        duwi_manager: DuwiManager,
+        house_no: str,
+        scene_data: dict[str, Any],
     ) -> None:
-        """Init DuwiHaSwitch."""
-        self.manager = scene_manager
-        self._attr_unique_id = f"dws{scene.scene_no}"
-        self.scene = scene
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return a device description for device registry."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{self.unique_id}")},
-            manufacturer=MANUFACTURER,
-            name=self.scene.scene_name,
-            model="Duwi Scene",
-            suggested_area=self.scene.floor_name + " " + self.scene.room_name
-        )
-
-    async def async_added_to_hass(self) -> None:
-        """Call when entity is added to hass."""
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass,
-                f"{DUWI_SCENE_UPDATE}_{self.scene.scene_no}",
-                self.async_write_ha_state,
-            )
-        )
-
-    @property
-    def available(self) -> bool:
-        """Return if the scene is enabled."""
-        return self.manager._is_connected or self.scene.execute_way == 1
+        """Initialize the scene."""
+        super().__init__(house_no, scene_data)
+        self._duwi_manager = duwi_manager
+        self._attr_unique_id = f"duwi_scene_{self._duwi_scene_no}"
+        self._attr_name = self._duwi_scene_name
 
     async def async_activate(self, **kwargs: Any) -> None:
         """Activate the scene."""
-        await self.manager.activate_scene(self.scene)
+        try:
+            await self._duwi_manager.operate_scene(self._duwi_scene_no)
+        except Exception:
+            _LOGGER.exception(
+                "Error activating scene %s (%s)",
+                self._duwi_scene_no, self._attr_name,
+            )

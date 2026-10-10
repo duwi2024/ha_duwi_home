@@ -1,64 +1,69 @@
+"""Support for Duwi devices."""
+import logging
 from typing import Any
 
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import Entity
+_LOGGER = logging.getLogger(__name__)
 
-from . import debounce
-from .const import MANUFACTURER, _LOGGER, DUWI_HA_SIGNAL_UPDATE_ENTITY, DOMAIN
-from .duwi_smarthome_sdk.base.manager import Manager
-from .duwi_smarthome_sdk.base.customer_device import CustomerDevice
+class DuwiDeviceEntity:
+    """Base class for device entities."""
+    def __init__(self, house_no: str, device_data: dict[str, Any]):
+        self._duwi_house_no = house_no
+        self._duwi_device_no = device_data.get("device_no")
+        self._duwi_device_name = device_data.get("device_name", "")
+        self._duwi_room_no = device_data.get("room_no", "")
+        self._duwi_terminal_sequence = device_data.get("terminal_sequence", "")
+        self._duwi_terminal_name = device_data.get("terminal_name", "")
+        self._duwi_route_num = device_data.get("route_num", 1)
+        self._duwi_is_use = bool(device_data.get("is_use", 0))
+        self._duwi_is_online = bool(device_data.get("is_online", 0))
+        self._duwi_device_type_no = device_data.get("device_type_no", "")
+        self._duwi_device_sub_type_no = device_data.get("device_sub_type_no", "")
+        self._duwi_device_value: dict[str, Any] = device_data.get("value", {}) or {}
+
+    def _update_online_status(self, is_online: bool) -> None:
+        """Update online status."""
+        self._duwi_is_online = is_online
+
+    def _update_device_value(self, device_values: dict[str, Any]) -> None:
+        """Update device value."""
+        for key, value in device_values.items():
+            if key == "deviceNo":
+                continue
+            self._duwi_device_value[key] = value
 
 
-class DuwiEntity(Entity):
-    """Duwi base device."""
-    _attr_has_entity_name = True
-    _attr_should_poll = False
+class DuwiSceneEntity:
+    """Base class for scene entities."""
+    def __init__(self, house_no: str, scene_data: dict[str, Any]):
+        self._duwi_house_no = house_no
+        self._duwi_scene_no = scene_data.get("scene_no")
+        self._duwi_scene_name = scene_data.get("scene_name", "")
+        self._duwi_is_use = bool(scene_data.get("is_use", 0))
+        self._duwi_scene_execute_way = scene_data.get("execute_way", "")
 
-    def __init__(self, device: CustomerDevice, device_manager: Manager) -> None:
-        """Init DuwiHaEntity."""
-        self._attr_unique_id = f"duwi.{device.device_no}"
-        self.device = device
-        self.entity_id = f"{DOMAIN}.{device.device_no}"
-        self.device_manager = device_manager
-        self.is_control = True
 
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return a device description for device registry."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.device_no)},
-            manufacturer=MANUFACTURER,
-            name=(self.device.room_name + " " if self.device.room_name else "默认房间 ") + self.device.device_name,
-            model=self.device.device_type,
-            suggested_area=self.device.floor_name + " " + self.device.room_name
-        )
+class DuwiGroupEntity:
+    """Base class for device group entities."""
 
-    async def async_added_to_hass(self) -> None:
-        """Call when entity is added to hass."""
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass,
-                f"{DUWI_HA_SIGNAL_UPDATE_ENTITY}_{self.device.device_no}",
-                self.handle_signal,
-            )
-        )
+    def __init__(self, house_no: str, group_data: dict[str, Any]) -> None:
+        self._duwi_house_no = house_no
+        self._duwi_group_no = group_data.get("device_group_no", "")
+        self._duwi_group_name = group_data.get("device_group_name", "")
+        self._duwi_group_type = group_data.get("device_group_type", "")
+        raw_value = group_data.get("value")
+        self._duwi_group_value: dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
+        self._duwi_execute_way = group_data.get("execute_way", 0)
+        self._duwi_room_no = group_data.get("room_no", "")
+        self._duwi_sync_host_sequences = group_data.get("sync_host_sequences") or []
+        self._duwi_is_online = bool(self._duwi_group_value.get("is_online", 0))
 
-    async def handle_signal(self) -> None:
-        """Handle the signal and call the appropriate method based on is_control."""
-        if self.is_control:
-            self.async_write_ha_state()
-        else:
-            self.is_control = True
+    def _update_group_value(self, group_value: dict[str, Any]) -> None:
+        """Update the group's current value from a real-time update."""
+        for key, value in group_value.items():
+            if key == "deviceGroupNo":
+                continue
+            self._duwi_group_value[key] = value
+    def _update_online_status(self, is_online: bool) -> None:
+        """Update online status."""
+        self._duwi_is_online = is_online
 
-    @property
-    def available(self) -> bool:
-        """Return if the device is available."""
-        return self.device.value.get("online", False)
-
-    async def _send_command(self, commands: dict[str, Any]) -> None:
-        """Send command to the device."""
-        self.device.value.update(commands)
-        self.is_control = False
-        self.async_write_ha_state()
-        await self.device_manager.send_commands(self.device.device_no, self.device.is_group, commands)
